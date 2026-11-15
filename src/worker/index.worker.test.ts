@@ -41,26 +41,39 @@ describe("fetch", () => {
 });
 
 describe("queue", () => {
-  it("acks a delivery message", async () => {
+  it("acks a message for an unknown delivery and a malformed one, with no Meta request", async () => {
     const instance = await worker.getWorker();
     const result = await instance.queue(worker.queueName, [
       {
         id: "fake-message-1",
         timestamp: new Date(),
-        body: { id: "fake-delivery-1" },
+        body: { deliveryId: "fake-delivery-1" },
+        attempts: 1,
+      },
+      {
+        id: "fake-message-2",
+        timestamp: new Date(),
+        body: { id: "not-a-delivery-message" },
         attempts: 1,
       },
     ]);
     expect(result.outcome).toBe("ok");
-    expect(result.explicitAcks).toEqual(["fake-message-1"]);
+    expect(result.explicitAcks).toEqual(["fake-message-1", "fake-message-2"]);
     expect(result.retryMessages).toEqual([]);
+    expect(worker.meta.requests).toHaveLength(0);
   });
 });
 
 describe("scheduled", () => {
-  it("runs the cron handler to completion", async () => {
+  it("runs the sweep to completion and stamps last_sweep_at", async () => {
     const instance = await worker.getWorker();
+    const before = Date.now();
     const result = await instance.scheduled({ cron: "* * * * *" });
     expect(result.outcome).toBe("ok");
+    const d1 = await worker.getD1();
+    const settings = await d1
+      .prepare("SELECT last_sweep_at FROM app_settings WHERE id = 1")
+      .first<{ last_sweep_at: number }>();
+    expect(settings!.last_sweep_at).toBeGreaterThanOrEqual(before);
   });
 });

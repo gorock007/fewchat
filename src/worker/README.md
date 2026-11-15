@@ -2,7 +2,10 @@ The one Cloudflare Worker (see `docs/adr/0002-free-first-cloudflare.md`): `fetch
 
 - `app.ts` — the Hono app: `GET /api/health`, the webhook routes, JSON 404.
 - `webhook.ts` — `GET`/`POST /api/webhooks/instagram`.
-- `harness.ts` — test helper: bundles the Worker and runs it in Miniflare with the `wrangler.jsonc` bindings, `migrations/*.sql` applied, fake secrets (`FAKE_ENV`) and, with `spyQueue`, a `DELIVERY_QUEUE` spy whose sends tests can read or make throw.
+- `consumer.ts` — `handleDeliveryBatch`: what `queue()` runs for each message.
+- `deps.ts` — `deliveryDependencies(env)`: the one factory both `queue()` and `scheduled()` build their delivery dependencies from.
+- `sweep.ts` — `runSweep`: what `scheduled()` runs every minute.
+- `harness.ts` — test helper: bundles the Worker and runs it in Miniflare with the `wrangler.jsonc` bindings, `migrations/*.sql` applied, fake secrets (`FAKE_ENV`) and, with `spyQueue`, a `DELIVERY_QUEUE` spy whose sends tests can read or make throw. Every outbound `fetch` from the Worker is answered by a fake Meta origin (`meta.requests` records them, `meta.respond` scripts the answer), so tests drive the real `graph.instagram.com` code path without the network; `env` overrides a fake binding.
 
 ## Webhook ingest
 
@@ -43,3 +46,19 @@ The event row's `payload` keeps only the comment, media and author IDs; the comm
 ### `comment_created_at` is approximate
 
 The webhook carries no creation time, so `comment_created_at` is `entry[].time` (seconds → ms). Meta documents that as the notification's send time, which is never earlier than the comment's creation. So the window can look longer than it is by the notification's delay; the hour of safety margin in `checkEligibility` absorbs a normal delay, not a redelivery days later. Recovery (2c) reads real `timestamp`s from the Comment node and should use those. A payload without `entry[].time` uses the receive time.
+
+## Queue and sweep
+
+`queue()` and `scheduled()` are thin: each builds `deliveryDependencies(env)` and hands over. If `parseEnv` fails, `queue()` retries every message (one fixed log line, no detail) and `scheduled()` logs the same and returns, so nothing is sent or lost until the config is fixed. `deliveryDependencies` wraps `fetch` (`(request) => globalThis.fetch(request)`) because the Meta client calls it as a method, which workerd rejects on the bare function.
+
+The queue is an accelerator and D1 is the record (ADR 0002 Decision 3), so the cron sweep (`* * * * *`) must work without it, including once the daily queue quota is gone. It never sends to the queue: it processes inline. Per tick, in order:
+
+1. `quarantineStaleSending` (60 s, limit 25): `SENDING` rows claimed over a minute ago become `DELIVERY_UNKNOWN`. They are never reset, because the claim may have reached Meta.
+2. `pendingDeliveries` due at least 60 s ago (`SWEEP_OVERDUE_MS`), oldest first, at most `SWEEP_BATCH_LIMIT` (5). The 60 s margin keeps the sweep off rows whose queue message is about to be handled, so they are not doubled.
+3. `processDelivery` on each, sequentially. A row that throws is counted by fixed class (`BeforeClaimError` or `ClaimOrProcessingError`, never the message) and the sweep goes on. Pause, reconnect and rate-limit gates leave their rows pending, as in the consumer, so an unpause is picked up on the next tick.
+4. `app_settings.last_sweep_at` is written once, after the work: the Health page's liveness signal. If step 1 or 2 throws (D1 is down), it is not written.
+5. One JSON log line: `{ event: "sweep", quarantined, processed: { <result>: n }, errors: { <class>: n } }`. Counts only.
+
+Five is the cap because each row is a D1 claim, one Meta call and a D1 write against a Worker invocation's 50 subrequests and 10 ms CPU (ADR 0002 Step 1 gates 3 and 6). A backlog drains at 5 rows a minute; the queue carries the normal load.
+
+A row that always throws at claim time stays the oldest due row and takes one of the five slots every tick. Five of them would stall the sweep, so a poisoned row is something to alert on, not just to skip.

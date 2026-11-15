@@ -94,7 +94,20 @@ export type StartWorkerOptions = {
    * `queue.failSends` is true. The consumer is unchanged.
    */
   spyQueue?: boolean;
+  /** Overrides for the fake env bindings, e.g. an invalid secret. */
+  env?: Partial<Record<keyof typeof FAKE_ENV, string>>;
 };
+
+/** An outbound request the Worker made, as the fake Meta origin saw it. */
+export type MetaRequest = {
+  url: string;
+  method: string;
+  authorization: string | null;
+  body: string;
+};
+
+const acceptedSend = () =>
+  Response.json({ recipient_id: "recipient_fake", message_id: "message_fake" });
 
 /**
  * Bundles the Worker the way wrangler would and runs it in Miniflare with the
@@ -103,6 +116,7 @@ export type StartWorkerOptions = {
  */
 export async function startWorker({
   spyQueue = false,
+  env = {},
 }: StartWorkerOptions = {}) {
   const config = readWranglerConfig();
   const bundle = await build({
@@ -121,6 +135,15 @@ export async function startWorker({
     : await mkdtemp(join(tmpdir(), "fewchat-no-out-"));
 
   const queue = { calls: [] as unknown[][], failSends: false };
+  // Every outbound fetch from the Worker lands here, so no test reaches the
+  // network. The Worker itself is unchanged: it still calls graph.instagram.com.
+  const meta = {
+    requests: [] as MetaRequest[],
+    /** Answers the next outbound request; replace it to script Meta. */
+    respond: acceptedSend as (
+      request: MetaRequest,
+    ) => Response | Promise<Response>,
+  };
   const producers = config.queues.producers.filter(
     (p) => !(spyQueue && p.binding === "DELIVERY_QUEUE"),
   );
@@ -129,7 +152,17 @@ export async function startWorker({
     modules: true,
     script: bundle.outputFiles[0]!.text,
     compatibilityDate: config.compatibility_date,
-    bindings: { ...FAKE_ENV },
+    bindings: { ...FAKE_ENV, ...env },
+    outboundService: async (request: Request) => {
+      const seen: MetaRequest = {
+        url: request.url,
+        method: request.method,
+        authorization: request.headers.get("authorization"),
+        body: await request.text(),
+      };
+      meta.requests.push(seen);
+      return meta.respond(seen);
+    },
     d1Databases: Object.fromEntries(
       config.d1_databases.map((d1) => [d1.binding, d1.database_id]),
     ),
@@ -184,6 +217,8 @@ export async function startWorker({
     queueName: config.queues.consumers[0]!.queue,
     /** What DELIVERY_QUEUE was sent, with `spyQueue` only. */
     queue,
+    /** What the Worker sent outbound (Meta), and how the fake origin answers. */
+    meta,
     getD1: () => mf.getD1Database("DB"),
     fetch: (path: string, init?: RequestInit) =>
       mf.dispatchFetch(`http://localhost${path}`, init as never),

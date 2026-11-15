@@ -3,6 +3,7 @@ Persistence: Drizzle schema, client and queries over the D1 binding. The only pl
 - `schema.ts` — the six tables (SQLite dialect): text IDs from `crypto.randomUUID()`, integer epoch-ms timestamps, text enums backed by a `CHECK`, JSON as text.
 - `client.ts` — `getDb(d1)`.
 - `deliveries.ts` — ingress batch and every delivery state transition (below).
+- `accounts-write.ts` — `markNeedsReconnect(db, accountId, now, encryptedAccessToken)` stops sends only when the stored ciphertext still matches the delivery's credential snapshot (including null); a concurrent reconnect with new ciphertext wins.
 - `test-d1.ts` — test helper: Miniflare with one D1 database and `migrations/*.sql` applied, plus fake-data fixtures. Tests are `*.worker.test.ts`.
 
 `migrations/0000_init.sql` and `0002_operational_events_related_delivery_idx.sql` are generated. `0001_seed_app_settings.sql` is a `drizzle-kit generate --custom` file holding the single `app_settings` row. Never edit a generated migration; change `schema.ts` and run `pnpm db:generate` for a new one.
@@ -14,12 +15,15 @@ Each transition is one conditional statement on the current status; none reads t
 - *(webhook)* → `QUEUED` — `recordEventStatements`, in the webhook's `db.batch` with the event. `next_attempt_at` = received time. Takes the once-per-user slot when the automation has it on.
 - *(webhook)* → `SKIPPED` — same batch: the comment will not be sent, or (`skip_reason = once_per_user`) the commenter already holds the slot. Never takes the slot.
 - *(webhook)* → `RECEIVED` — recorded but not yet decided.
-- `QUEUED` | `RETRYABLE_FAILED` → `SENDING` — `claimDelivery`. Sets `claimed_at`, adds 1 to `attempt_count`. Refused while the account has `perHour` claims in the last hour or `burstPerMinute` in the last minute (counting `SENDING`, `SENT`, `DELIVERY_UNKNOWN`); then returns `rate_limited` with `retryAt`.
+- `QUEUED` | `RETRYABLE_FAILED` → `SENDING` — `claimDelivery`. Sets `claimed_at`, adds 1 to `attempt_count`. Refused before `next_attempt_at` or while the account has `perHour` claims in the last hour or `burstPerMinute` in the last minute (counting `SENDING`, `SENT`, `DELIVERY_UNKNOWN`); then returns `rate_limited` with `retryAt`. The due-time predicate is inside the update, so a stale preflight read cannot bypass a newly persisted backoff.
 - `SENDING` | `DELIVERY_UNKNOWN` → `SENT` — `finishDelivery`, with Meta's message ID and `sent_at`. Accepting `DELIVERY_UNKNOWN` lets a sender that outlived the stale-`SENDING` quarantine still record the success.
 - `SENDING` → `RETRYABLE_FAILED` — `failDelivery`, with a new `next_attempt_at`. Claimable again.
-- `SENDING` → `PERMANENT_FAILED` — `failDelivery`. Terminal.
+- `SENDING` → `PERMANENT_FAILED` — `failDelivery`. Terminal; clears `counts_toward_once_per_user` in the same conditional update so a later comment may take the slot.
 - `SENDING` → `DELIVERY_UNKNOWN` — `failDelivery` when the outcome is uncertain, or `quarantineStaleSending` when the claim is older than 60 s (default). Nothing re-sends it, and nothing moves it to `QUEUED` or `RETRYABLE_FAILED` (`failDelivery` acts only from `SENDING`); its only way out is `finishDelivery`.
-- `EXPIRED` — in the vocabulary; no transition writes it yet (the sweep or consumer will, past the private-reply window).
+- `QUEUED` | `RETRYABLE_FAILED` → `EXPIRED` — `expireDelivery`, when the automation is inactive/deleted or comment eligibility is missing/expired. Clears `counts_toward_once_per_user` and `next_attempt_at` in the same conditional update.
+- `QUEUED` | `RETRYABLE_FAILED` → unchanged status — `deferDelivery` sets `next_attempt_at` without consuming an attempt or releasing the slot. Refused after a claim or terminal transition.
+
+`SENT`, `DELIVERY_UNKNOWN`, and retryable failures retain their once-per-user slot. Releasing a terminal failure's slot never revives comments already recorded as `SKIPPED`.
 
 `pendingDeliveries` lists `QUEUED`/`RETRYABLE_FAILED` rows with `next_attempt_at <= now`, earliest first, up to a limit, for the cron sweep to enqueue.
 

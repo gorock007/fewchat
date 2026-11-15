@@ -189,7 +189,7 @@ export type ClaimLimits = {
 
 export type ClaimResult =
   | { outcome: "claimed"; delivery: Delivery }
-  /** Still pending, but the account is at its limit until `retryAt` (epoch ms). */
+  /** Still pending, but not due or the account is limited until `retryAt` (epoch ms). */
   | { outcome: "rate_limited"; retryAt: number }
   /** Missing, or no longer pending: another caller claimed or finished it. */
   | { outcome: "unavailable"; status: DeliveryStatus | null };
@@ -222,6 +222,7 @@ export function claimStatement(
       and(
         eq(deliveries.id, id),
         isPending,
+        lte(deliveries.nextAttemptAt, now),
         sql`${claimsSince(now - HOUR_MS)} < ${limits.perHour}`,
         sql`${claimsSince(now - MINUTE_MS)} < ${limits.burstPerMinute}`,
       ),
@@ -231,7 +232,8 @@ export function claimStatement(
 
 /**
  * Claims a delivery for sending. The rolling-hour and per-minute limits are
- * checked inside the same UPDATE, so concurrent claims cannot overshoot them.
+ * checked inside the same UPDATE, so concurrent claims cannot overshoot them
+ * or bypass a persisted next-attempt time.
  * When the claim does nothing, a follow-up read says whether the row was
  * taken or the account is at its limit, and until when.
  */
@@ -246,6 +248,7 @@ export async function claimDelivery(
     .select({
       status: deliveries.status,
       instagramAccountId: deliveries.instagramAccountId,
+      nextAttemptAt: deliveries.nextAttemptAt,
     })
     .from(deliveries)
     .where(eq(deliveries.id, input.id));
@@ -254,6 +257,12 @@ export async function claimDelivery(
     !(PENDING_DELIVERY_STATUSES as readonly string[]).includes(row.status)
   ) {
     return { outcome: "unavailable", status: row?.status ?? null };
+  }
+
+  // A competing sender may already have persisted a new backoff after our
+  // caller's preflight read. Enforce it in the claim, not just that read.
+  if (row.nextAttemptAt !== null && row.nextAttemptAt > input.now) {
+    return { outcome: "rate_limited", retryAt: row.nextAttemptAt };
   }
 
   const claims = await db
@@ -328,6 +337,9 @@ export async function failDelivery(
     .update(deliveries)
     .set({
       status: input.status,
+      ...(input.status === "PERMANENT_FAILED"
+        ? { countsTowardOncePerUser: false }
+        : {}),
       nextAttemptAt:
         input.status === "RETRYABLE_FAILED" ? input.nextAttemptAt : null,
       lastErrorCategory: input.errorCategory,
@@ -336,6 +348,38 @@ export async function failDelivery(
       updatedAt: input.now,
     })
     .where(and(eq(deliveries.id, input.id), isSending))
+    .returning({ id: deliveries.id });
+  return rows.length > 0;
+}
+
+/** Pending → EXPIRED, releasing the once-per-user slot in the same statement. */
+export async function expireDelivery(
+  db: Db,
+  input: { id: string; now: number; errorCategory: string },
+): Promise<boolean> {
+  const rows = await db
+    .update(deliveries)
+    .set({
+      status: "EXPIRED",
+      countsTowardOncePerUser: false,
+      nextAttemptAt: null,
+      lastErrorCategory: input.errorCategory,
+      updatedAt: input.now,
+    })
+    .where(and(eq(deliveries.id, input.id), isPending))
+    .returning({ id: deliveries.id });
+  return rows.length > 0;
+}
+
+/** Move the pending due time without claiming or consuming an attempt. */
+export async function deferDelivery(
+  db: Db,
+  input: { id: string; now: number; nextAttemptAt: number },
+): Promise<boolean> {
+  const rows = await db
+    .update(deliveries)
+    .set({ nextAttemptAt: input.nextAttemptAt, updatedAt: input.now })
+    .where(and(eq(deliveries.id, input.id), isPending))
     .returning({ id: deliveries.id });
   return rows.length > 0;
 }

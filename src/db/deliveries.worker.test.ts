@@ -3,6 +3,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
   claimDelivery,
+  deferDelivery,
+  expireDelivery,
   failDelivery,
   finishDelivery,
   pendingDeliveries,
@@ -378,6 +380,130 @@ describe("claimDelivery", () => {
 });
 
 describe("finishDelivery and failDelivery", () => {
+  it.each(["PERMANENT_FAILED", "EXPIRED"] as const)(
+    "%s releases the slot for a later comment, without reviving skipped comments",
+    async (status) => {
+      const automation = await setup();
+      const commenterIgsid = fakeId("slot_user");
+      const [first, skipped] = await recordEvents(t.db, [
+        comment(automation, { commenterIgsid }),
+        comment(automation, { commenterIgsid }),
+      ]);
+      const id = first!.delivery!.id;
+      expect(skipped!.delivery!.status).toBe("SKIPPED");
+      if (status === "PERMANENT_FAILED") {
+        await claimed(id, T0);
+        expect(
+          await failDelivery(t.db, {
+            id,
+            now: T0,
+            status,
+            errorCategory: "fake_terminal",
+          }),
+        ).toBe(true);
+      } else {
+        expect(
+          await expireDelivery(t.db, {
+            id,
+            now: T0,
+            errorCategory: "fake_expired",
+          }),
+        ).toBe(true);
+      }
+      expect(await read(id)).toMatchObject({
+        status,
+        countsTowardOncePerUser: false,
+        nextAttemptAt: null,
+      });
+      const [next] = await recordEvents(t.db, [
+        comment(automation, { commenterIgsid }),
+      ]);
+      expect(next!.delivery!.status).toBe("QUEUED");
+      expect((await read(skipped!.delivery!.id)).status).toBe("SKIPPED");
+    },
+  );
+
+  it("UNKNOWN retains the slot and refuses expiration or permanent failure", async () => {
+    const automation = await setup();
+    const commenterIgsid = fakeId("unknown_slot_user");
+    const [first] = await recordEvents(t.db, [
+      comment(automation, { commenterIgsid }),
+    ]);
+    const id = first!.delivery!.id;
+    await claimed(id, T0);
+    await failDelivery(t.db, {
+      id,
+      now: T0,
+      status: "DELIVERY_UNKNOWN",
+      errorCategory: "unknown",
+    });
+    const before = await read(id);
+    expect(
+      await expireDelivery(t.db, { id, now: T0 + 1, errorCategory: "expired" }),
+    ).toBe(false);
+    expect(
+      await failDelivery(t.db, {
+        id,
+        now: T0 + 1,
+        status: "PERMANENT_FAILED",
+        errorCategory: "fake_terminal",
+      }),
+    ).toBe(false);
+    expect(await read(id)).toEqual(before);
+    const [next] = await recordEvents(t.db, [
+      comment(automation, { commenterIgsid }),
+    ]);
+    expect(next!.delivery!.status).toBe("SKIPPED");
+    expect(before.countsTowardOncePerUser).toBe(true);
+  });
+
+  it("defers/expires only pending rows, preserving attempts and slots when deferring", async () => {
+    const id = await queued(await setup());
+    expect(
+      await deferDelivery(t.db, { id, now: T0, nextAttemptAt: T0 + MINUTE }),
+    ).toBe(true);
+    expect(await read(id)).toMatchObject({
+      status: "QUEUED",
+      nextAttemptAt: T0 + MINUTE,
+      attemptCount: 0,
+      countsTowardOncePerUser: true,
+    });
+    await claimed(id, T0 + MINUTE);
+    const before = await read(id);
+    expect(
+      await deferDelivery(t.db, { id, now: T0, nextAttemptAt: T0 + HOUR }),
+    ).toBe(false);
+    expect(
+      await expireDelivery(t.db, { id, now: T0, errorCategory: "expired" }),
+    ).toBe(false);
+    expect(await read(id)).toEqual(before);
+    await failDelivery(t.db, {
+      id,
+      now: T0,
+      status: "RETRYABLE_FAILED",
+      nextAttemptAt: T0 + MINUTE,
+      errorCategory: "not_sent",
+    });
+    expect(
+      await deferDelivery(t.db, { id, now: T0, nextAttemptAt: T0 + HOUR }),
+    ).toBe(true);
+    expect((await read(id)).attemptCount).toBe(1);
+    expect(
+      await expireDelivery(t.db, { id, now: T0, errorCategory: "expired" }),
+    ).toBe(true);
+    expect((await read(id)).countsTowardOncePerUser).toBe(false);
+    expect(
+      await deferDelivery(t.db, { id, now: T0, nextAttemptAt: T0 + HOUR }),
+    ).toBe(false);
+    expect(
+      await expireDelivery(t.db, {
+        id: "missing_fake_id",
+        now: T0,
+        errorCategory: "expired",
+      }),
+    ).toBe(false);
+  });
+
   it("finishes a SENDING delivery with Meta's message ID", async () => {
     const id = await queued(await setup());
     await claimed(id, T0);

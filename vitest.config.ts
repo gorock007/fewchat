@@ -14,16 +14,19 @@ export default defineConfig({
           name: "unit",
           environment: "node",
           include: ["src/**/*.test.ts"],
-          exclude: ["src/**/*.db.test.ts"],
+          exclude: ["src/**/*.worker.test.ts"],
         },
       },
       {
-        // Needs a running PostgreSQL (`docker compose up -d db`).
+        // Runs the bundled Worker in Miniflare (workerd). Asset tests need
+        // `out/` from `pnpm build` and skip with a message when it is missing.
         extends: true,
         test: {
-          name: "db",
+          name: "worker",
           environment: "node",
-          include: ["src/**/*.db.test.ts"],
+          include: ["src/**/*.worker.test.ts"],
+          testTimeout: 30_000,
+          hookTimeout: 60_000,
         },
       },
     ],

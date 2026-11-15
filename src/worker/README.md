@@ -1,1 +1,1 @@
-Background worker: the long-running Node process that claims durable jobs from PostgreSQL. Run with `pnpm worker`.
+The one Cloudflare Worker (see `docs/adr/0002-free-first-cloudflare.md`): `fetch` (a Hono app for `/api/*`, `/webhook` and `/oauth/*`), `queue()` (delivery consumer) and `scheduled()` (cron sweep). Everything else is served from the static export in `out/`. Run it with `pnpm dev:worker`; its tests run Miniflare through the Vitest `worker` project.

@@ -1,14 +1,9 @@
-import { existsSync } from "node:fs";
-
 import { defineConfig } from "drizzle-kit";
 
-if (existsSync(".env")) process.loadEnvFile(".env");
-
+// `generate` needs no credentials; the SQL files are applied with
+// `wrangler d1 migrations apply` (see `db:migrate:local`).
 export default defineConfig({
-  dialect: "postgresql",
+  dialect: "sqlite",
   schema: "./src/db/schema.ts",
-  out: "./drizzle",
-  dbCredentials: {
-    url: process.env.DATABASE_URL ?? "",
-  },
+  out: "./migrations",
 });

@@ -1,9 +1,7 @@
-# Copy to .env and fill in. Every value below is a placeholder.
+# Copy to .dev.vars (git-ignored; wrangler dev reads it) and fill in. Every value below is a placeholder.
 
-# PostgreSQL connection string (matches the `db` service in docker-compose.yml).
-DATABASE_URL=postgres://fewchat:fewchat@localhost:5432/fewchat
 # Public base URL of this app; Meta webhooks and OAuth redirects point here (HTTPS in production).
-APP_URL=http://localhost:3000
+APP_URL=http://localhost:8787
 # Meta app ID from the Meta developer dashboard.
 META_APP_ID=your-meta-app-id
 # Meta app secret; also used to verify webhook signatures. Never commit the real one.

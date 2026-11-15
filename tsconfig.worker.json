@@ -1,0 +1,27 @@
+{
+  // Worker-side code: Workers runtime types, no DOM. Kept apart from
+  // tsconfig.json so they never mix with the Next app's types.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["@cloudflare/workers-types", "node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": [
+    "worker-configuration.d.ts",
+    "src/worker/**/*.ts",
+    "src/db/**/*.ts",
+    "src/config/**/*.ts",
+    "src/domain/**/*.ts"
+  ]
+}

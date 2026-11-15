@@ -3,8 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parseEnv } from "./env";
 
 const valid = {
-  DATABASE_URL: "postgres://fewchat:fewchat@localhost:5432/fewchat",
-  APP_URL: "http://localhost:3000",
+  APP_URL: "http://localhost:8787",
   META_APP_ID: "000000000000000",
   META_APP_SECRET: "fake-app-secret",
   META_WEBHOOK_VERIFY_TOKEN: "fake-verify-token",

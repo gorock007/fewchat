@@ -5,7 +5,9 @@ build/
 coverage/
 playwright-report/
 test-results/
-drizzle/
+migrations/
+.wrangler/
+worker-configuration.d.ts
 docs/
 handoffs/
 .claude/

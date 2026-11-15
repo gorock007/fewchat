@@ -16,7 +16,9 @@ const eslintConfig = defineConfig([
     "coverage/**",
     "playwright-report/**",
     "test-results/**",
-    "drizzle/**",
+    ".wrangler/**",
+    "worker-configuration.d.ts",
+    "spike/**",
   ]),
 ]);
 

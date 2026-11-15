@@ -1,10 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Standalone output keeps the Docker image small (see Dockerfile).
-  output: process.env.NEXT_OUTPUT === "export" ? "export" : "standalone",
-  cacheComponents: process.env.NEXT_OUTPUT !== "export",
-  partialPrefetching: process.env.NEXT_OUTPUT !== "export",
+  // The dashboard is a static export served by the Worker (docs/adr/0002).
+  output: "export",
   turbopack: {
     rules: {
       "*.css": {

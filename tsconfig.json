@@ -31,5 +31,11 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "spike",
+    "worker-configuration.d.ts",
+    "src/worker",
+    "src/db/client.ts"
+  ]
 }

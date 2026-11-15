@@ -1,1 +1,1 @@
-Persistence: Drizzle schema, client and queries. The only place that talks to PostgreSQL.
+Persistence: Drizzle schema, client and queries over the D1 binding. The only place that talks to the database. Migrations are SQL files in `migrations/`, generated with `pnpm db:generate` and applied with `pnpm db:migrate:local`.

@@ -1,11 +1,11 @@
 import { z } from "zod";
 
 /**
- * Server-side environment, validated with zod. Read it through `getEnv()`
- * only: validation is lazy so `next build` works without a `.env`.
+ * Secrets and settings the Worker reads from its env object (`.dev.vars`
+ * locally, Worker secrets in production), validated with zod. The `DB` and
+ * `DELIVERY_QUEUE` bindings are not here: they are typed by `wrangler types`.
  */
 const envSchema = z.object({
-  DATABASE_URL: z.url(),
   APP_URL: z.url(),
   META_APP_ID: z.string().min(1),
   META_APP_SECRET: z.string().min(1),
@@ -18,22 +18,15 @@ const envSchema = z.object({
   SESSION_SECRET: z.string().min(32),
 });
 
-export type Env = z.infer<typeof envSchema>;
+export type AppEnv = z.infer<typeof envSchema>;
 
-export function parseEnv(source: Record<string, string | undefined>): Env {
+export function parseEnv(source: Record<string, unknown>): AppEnv {
   const result = envSchema.safeParse(source);
   if (!result.success) {
     const fields = result.error.issues.map((issue) => issue.path.join("."));
     throw new Error(
-      `Invalid environment: ${[...new Set(fields)].join(", ")}. See .env.example.`,
+      `Invalid environment: ${[...new Set(fields)].join(", ")}. See .dev.vars.example.`,
     );
   }
   return result.data;
-}
-
-let cached: Env | undefined;
-
-export function getEnv(): Env {
-  cached ??= parseEnv(process.env);
-  return cached;
 }

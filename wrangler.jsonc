@@ -1,0 +1,35 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fewchat",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-07-30",
+  // IDs below are placeholders (this repo is public). A real deploy uses a
+  // git-ignored wrangler.deploy.jsonc; see the README.
+  "assets": {
+    "directory": "./out",
+    "run_worker_first": ["/api/*", "/webhook", "/oauth/*"],
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "fewchat-db",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "DELIVERY_QUEUE", "queue": "fewchat-deliveries" },
+    ],
+    "consumers": [
+      {
+        "queue": "fewchat-deliveries",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 3,
+      },
+    ],
+  },
+  "triggers": { "crons": ["* * * * *"] },
+  "observability": { "enabled": true },
+}

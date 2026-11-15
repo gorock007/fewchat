@@ -2,9 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   // Standalone output keeps the Docker image small (see Dockerfile).
-  output: "standalone",
-  cacheComponents: true,
-  partialPrefetching: true,
+  output: process.env.NEXT_OUTPUT === "export" ? "export" : "standalone",
+  cacheComponents: process.env.NEXT_OUTPUT !== "export",
+  partialPrefetching: process.env.NEXT_OUTPUT !== "export",
   turbopack: {
     rules: {
       "*.css": {

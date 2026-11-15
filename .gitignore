@@ -21,3 +21,6 @@ handoffs/jarvis.local.conf
 next-env.d.ts
 npm-debug.log*
 .pnpm-debug.log*
+spike/.wrangler/
+spike/node_modules/
+.wrangler/

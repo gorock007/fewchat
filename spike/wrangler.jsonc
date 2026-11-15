@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fewchat-spike",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-30",
+  "assets": {
+    "directory": "../out",
+    "binding": "ASSETS",
+    "run_worker_first": ["/webhook", "/login", "/__spike/*"]
+  },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "fewchat-spike-db",
+    "database_id": "00000000-0000-0000-0000-000000000001",
+    "migrations_dir": "migrations"
+  }],
+  "queues": {
+    "producers": [{ "binding": "DELIVERY_QUEUE", "queue": "fewchat-spike-q" }],
+    "consumers": [{ "queue": "fewchat-spike-q", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 3 }]
+  },
+  "triggers": { "crons": ["* * * * *"] },
+  "observability": { "enabled": true },
+  "vars": {
+    "PROCESSING_MODE": "queue",
+    "SPIKE_ENABLED": "local",
+    "MOCK_URL": "http://127.0.0.1:8799/messages"
+  }
+}

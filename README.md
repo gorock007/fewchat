@@ -40,6 +40,25 @@ deploy, put your own D1 `database_id` and any other account-specific settings in
 a git-ignored `wrangler.deploy.jsonc` and pass it with `wrangler --config`.
 There is no deploy guide yet.
 
+### Seeding for the live test
+
+Until the dashboard and OAuth exist, `pnpm seed` puts your Instagram account and
+one automation into D1 so the Step 3 live Meta test can run. It needs
+`TOKEN_ENCRYPTION_KEY` and `META_GRAPH_API_VERSION` from the environment or
+`.dev.vars`, and the migrations applied (`pnpm db:migrate:local`).
+
+```sh
+# The long-lived token goes on stdin, never a flag.
+pbpaste | pnpm seed account
+pnpm seed automation --media <media id> --keyword guide --url https://example.com/guide
+```
+
+For the deployed database, add `--remote --config wrangler.deploy.jsonc` to both
+commands, with the same `TOKEN_ENCRYPTION_KEY` as the deployed Worker. Run
+`pnpm seed --help` for every flag. Running `account` again replaces the token;
+`automation` deactivates any other active automation on the same media. Once
+connected, the cron sweep refreshes the token before it expires.
+
 ## License
 
 [MIT](LICENSE)

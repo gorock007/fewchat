@@ -5,6 +5,7 @@ The one Cloudflare Worker (see `docs/adr/0002-free-first-cloudflare.md`): `fetch
 - `consumer.ts` — `handleDeliveryBatch`: what `queue()` runs for each message.
 - `deps.ts` — `deliveryDependencies(env)`: the one factory both `queue()` and `scheduled()` build their delivery dependencies from.
 - `sweep.ts` — `runSweep`: what `scheduled()` runs every minute.
+- `refresh.ts` — `refreshDueToken`: the sweep's daily long-lived token refresh.
 - `harness.ts` — test helper: bundles the Worker and runs it in Miniflare with the `wrangler.jsonc` bindings, `migrations/*.sql` applied, fake secrets (`FAKE_ENV`) and, with `spyQueue`, a `DELIVERY_QUEUE` spy whose sends tests can read or make throw. Every outbound `fetch` from the Worker is answered by a fake Meta origin (`meta.requests` records them, `meta.respond` scripts the answer), so tests drive the real `graph.instagram.com` code path without the network; `env` overrides a fake binding.
 
 ## Webhook ingest
@@ -54,11 +55,22 @@ The webhook carries no creation time, so `comment_created_at` is `entry[].time` 
 The queue is an accelerator and D1 is the record (ADR 0002 Decision 3), so the cron sweep (`* * * * *`) must work without it, including once the daily queue quota is gone. It never sends to the queue: it processes inline. Per tick, in order:
 
 1. `quarantineStaleSending` (60 s, limit 25): `SENDING` rows claimed over a minute ago become `DELIVERY_UNKNOWN`. They are never reset, because the claim may have reached Meta.
-2. `pendingDeliveries` due at least 60 s ago (`SWEEP_OVERDUE_MS`), oldest first, at most `SWEEP_BATCH_LIMIT` (5). The 60 s margin keeps the sweep off rows whose queue message is about to be handled, so they are not doubled.
-3. `processDelivery` on each, sequentially. A row that throws is counted by fixed class (`BeforeClaimError` or `ClaimOrProcessingError`, never the message) and the sweep goes on. Pause, reconnect and rate-limit gates leave their rows pending, as in the consumer, so an unpause is picked up on the next tick.
-4. `app_settings.last_sweep_at` is written once, after the work: the Health page's liveness signal. If step 1 or 2 throws (D1 is down), it is not written.
-5. One JSON log line: `{ event: "sweep", quarantined, processed: { <result>: n }, errors: { <class>: n } }`. Counts only.
+2. `refreshDueToken`: at most one account whose token is due (below).
+3. `pendingDeliveries` due at least 60 s ago (`SWEEP_OVERDUE_MS`), oldest first, at most `SWEEP_BATCH_LIMIT` (5). The 60 s margin keeps the sweep off rows whose queue message is about to be handled, so they are not doubled.
+4. `processDelivery` on each, sequentially. A row that throws is counted by fixed class (`BeforeClaimError` or `ClaimOrProcessingError`, never the message) and the sweep goes on. Pause, reconnect and rate-limit gates leave their rows pending, as in the consumer, so an unpause is picked up on the next tick.
+5. `app_settings.last_sweep_at` is written once, after the work: the Health page's liveness signal. If step 1 or 3 throws (D1 is down), it is not written.
+6. One JSON log line: `{ event: "sweep", quarantined, refreshed, refresh_failed, processed: { <result>: n }, errors: { <class>: n } }`. Counts only.
 
 Five is the cap because each row is a D1 claim, one Meta call and a D1 write against a Worker invocation's 50 subrequests and 10 ms CPU (ADR 0002 Step 1 gates 3 and 6). A backlog drains at 5 rows a minute; the queue carries the normal load.
 
 A row that always throws at claim time stays the oldest due row and takes one of the five slots every tick. Five of them would stall the sweep, so a poisoned row is something to alert on, not just to skip.
+
+### Token refresh
+
+A long-lived Instagram token lasts 60 days and Meta refuses to refresh one under 24 hours old (`docs/research/meta-api.md` §2.2). `refreshDueToken` picks one account per tick that is `connected`, has a token, has under 7 days left, was issued (`token_refreshed_at`) at least 24 hours ago (null counts as old enough) and has no refresh attempt (`token_refresh_attempted_at`) in the last hour; the soonest to expire goes first.
+
+1. Stamp `token_refresh_attempted_at`, conditional on the ciphertext just read (a reconnect makes it a no-op).
+2. Decrypt and call `refreshToken`. Success: new envelope, `token_expires_at` from the returned `expires_in`, `token_refreshed_at` = now, all conditional on the old ciphertext.
+3. `token_invalid` or `permission_denied` (and a token that cannot be decrypted): `markNeedsReconnect`, conditional as for a send. Anything else leaves the account alone; the stamp makes the retry an hour later.
+
+The sweep counts `refreshed` and `refresh_failed` (0 or 1 each). A thrown error is counted as `errors.RefreshError` and the sends go on. The token and Meta's failure text are never logged.

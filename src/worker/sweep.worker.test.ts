@@ -264,6 +264,48 @@ describe("the real Worker's queue() and scheduled()", () => {
     await tick();
     expect((await readSettings(db)).lastSweepAt!).toBeGreaterThan(first);
   });
+
+  it("scheduled() refreshes a due token through the real Worker: one request, new expiry stored", async () => {
+    const seeded = await seed(db);
+    const now = Date.now();
+    await db
+      .update(instagramAccounts)
+      .set({
+        tokenExpiresAt: now + 2 * 24 * 60 * 60 * 1000,
+        tokenRefreshedAt: now - 3 * 24 * 60 * 60 * 1000,
+      })
+      .where(eq(instagramAccounts.id, seeded.account.id));
+    worker.meta.respond = () =>
+      Response.json({
+        access_token: "FAKE_WORKER_REFRESHED_TOKEN",
+        token_type: "bearer",
+        expires_in: 5_184_000,
+      });
+    try {
+      await tick();
+      await tick();
+    } finally {
+      worker.meta.respond = () =>
+        Response.json({
+          recipient_id: "recipient_fake",
+          message_id: "message_fake",
+        });
+    }
+
+    const refreshes = worker.meta.requests.filter((r) =>
+      r.url.includes("/refresh_access_token"),
+    );
+    expect(refreshes).toHaveLength(1);
+    expect(refreshes[0]!.url).toContain("ig_refresh_token");
+    const [account] = await db
+      .select()
+      .from(instagramAccounts)
+      .where(eq(instagramAccounts.id, seeded.account.id));
+    expect(account!.tokenExpiresAt).toBeGreaterThan(
+      now + 59 * 24 * 60 * 60 * 1000,
+    );
+    expect(account!.tokenRefreshedAt).toBeGreaterThanOrEqual(now);
+  });
 });
 
 describe("with an invalid config", () => {
@@ -342,6 +384,8 @@ describe("runSweep log line", () => {
     );
     expect(summary).toEqual({
       quarantined: 0,
+      refreshed: 0,
+      refresh_failed: 0,
       processed: { sent: 1 },
       errors: { ClaimOrProcessingError: 1 },
     });
@@ -349,6 +393,8 @@ describe("runSweep log line", () => {
       JSON.stringify({
         event: "sweep",
         quarantined: 0,
+        refreshed: 0,
+        refresh_failed: 0,
         processed: { sent: 1 },
         errors: { ClaimOrProcessingError: 1 },
       }),
@@ -357,5 +403,135 @@ describe("runSweep log line", () => {
     expect(log.mock.calls[0]![0]).not.toContain(f.delivery.id);
     expect(log.mock.calls[0]![0]).not.toContain(second.id);
     expect((await readSettings(t.db)).lastSweepAt).toBe(NOW + 120 * SECOND);
+  });
+
+  it("refreshes a due token before the pending rows, counted and never logged", async () => {
+    const f = await deliveryFixture(t.db);
+    const order: string[] = [];
+    const refreshToken = vi.fn(async () => {
+      order.push("refresh");
+      return {
+        kind: "ok" as const,
+        data: {
+          access_token: "FAKE_SWEEP_REFRESHED_TOKEN",
+          token_type: "bearer",
+          expires_in: 5_184_000,
+        },
+      };
+    });
+    const sendPrivateReply = vi.fn(async (input: never) => {
+      order.push("send");
+      return f.deps.meta.sendPrivateReply(input);
+    });
+    const now = NOW + 120 * SECOND;
+    await t.db
+      .update(instagramAccounts)
+      .set({
+        tokenExpiresAt: now + 24 * 60 * 60 * 1000,
+        tokenRefreshedAt: now - 3 * 24 * 60 * 60 * 1000,
+      })
+      .where(eq(instagramAccounts.id, f.account.id));
+    const log = vi.fn();
+
+    const summary = await runSweep(
+      { ...f.deps, meta: { sendPrivateReply, refreshToken }, log },
+      { now },
+    );
+
+    expect(order).toEqual(["refresh", "send"]);
+    expect(summary).toMatchObject({
+      refreshed: 1,
+      refresh_failed: 0,
+      processed: { sent: 1 },
+    });
+    expect(refreshToken).toHaveBeenCalledOnce();
+    expect(log.mock.calls[0]![0]).toContain('"refreshed":1');
+    expect(log.mock.calls[0]![0]).not.toContain("FAKE_SWEEP_REFRESHED_TOKEN");
+    // Already refreshed: the next tick does not call Meta's token endpoint again.
+    await runSweep(
+      { ...f.deps, meta: { sendPrivateReply, refreshToken }, log },
+      { now: now + 60 * SECOND },
+    );
+    expect(refreshToken).toHaveBeenCalledOnce();
+  });
+
+  it("counts a failed refresh and a throwing one, and still sends", async () => {
+    const f = await deliveryFixture(t.db);
+    const now = NOW + 120 * SECOND;
+    await t.db
+      .update(instagramAccounts)
+      .set({
+        tokenExpiresAt: now + 24 * 60 * 60 * 1000,
+        tokenRefreshedAt: now - 3 * 24 * 60 * 60 * 1000,
+      })
+      .where(eq(instagramAccounts.id, f.account.id));
+    const failure = {
+      kind: "unknown" as const,
+      httpStatus: 503,
+      code: null,
+      subcode: null,
+      type: null,
+      isTransient: true,
+      fbtraceId: null,
+      message: "Synthetic",
+    };
+    const failed = await runSweep(
+      {
+        ...f.deps,
+        meta: {
+          sendPrivateReply: f.deps.meta.sendPrivateReply,
+          refreshToken: async () => failure,
+        },
+        log: vi.fn(),
+      },
+      { now },
+    );
+    expect(failed).toMatchObject({ refresh_failed: 1, processed: { sent: 1 } });
+
+    // A thrown error (D1 down, say) is classed, not leaked, and sends go on.
+    const second = await f.insert();
+    await t.db
+      .update(instagramAccounts)
+      .set({ tokenRefreshAttemptedAt: null })
+      .where(eq(instagramAccounts.id, f.account.id));
+    const thrown = await runSweep(
+      {
+        ...f.deps,
+        meta: {
+          sendPrivateReply: f.deps.meta.sendPrivateReply,
+          refreshToken: async () => {
+            throw new Error("FAKE_SECRET_REFRESH_TEXT");
+          },
+        },
+        log: vi.fn(),
+      },
+      { now: now + 2 * 60 * 60 * 1000 },
+    );
+    expect(thrown.errors).toEqual({ RefreshError: 1 });
+    expect(thrown.processed).toEqual({ sent: 1 });
+    expect(second.id).toBeDefined();
+  });
+
+  it("reports a due token it cannot refresh instead of skipping it silently", async () => {
+    const f = await deliveryFixture(t.db);
+    const now = NOW + 120 * SECOND;
+    await t.db
+      .update(instagramAccounts)
+      .set({
+        tokenExpiresAt: now + 24 * 60 * 60 * 1000,
+        tokenRefreshedAt: now - 3 * 24 * 60 * 60 * 1000,
+      })
+      .where(eq(instagramAccounts.id, f.account.id));
+
+    const summary = await runSweep(
+      {
+        ...f.deps,
+        meta: { sendPrivateReply: f.deps.meta.sendPrivateReply },
+        log: vi.fn(),
+      },
+      { now },
+    );
+
+    expect(summary.errors).toMatchObject({ RefreshError: 1 });
   });
 });

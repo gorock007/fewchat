@@ -4,9 +4,10 @@ Persistence: Drizzle schema, client and queries over the D1 binding. The only pl
 - `client.ts` — `getDb(d1)`.
 - `deliveries.ts` — ingress batch and every delivery state transition (below).
 - `accounts-write.ts` — `markNeedsReconnect(db, accountId, now, encryptedAccessToken)` stops sends only when the stored ciphertext still matches the delivery's credential snapshot (including null); a concurrent reconnect with new ciphertext wins.
+  Also: `upsertSeededAccount` (the seed CLI's insert-or-replace, rendered to SQL; its update applies only to the row id the token was encrypted with), and `stampTokenRefreshAttempt` / `saveRefreshedToken` for the daily token refresh, each conditional on the ciphertext that was read, so a reconnect always wins.
 - `test-d1.ts` — test helper: Miniflare with one D1 database and `migrations/*.sql` applied, plus fake-data fixtures. Tests are `*.worker.test.ts`.
 
-`migrations/0000_init.sql` and `0002_operational_events_related_delivery_idx.sql` are generated. `0001_seed_app_settings.sql` is a `drizzle-kit generate --custom` file holding the single `app_settings` row. Never edit a generated migration; change `schema.ts` and run `pnpm db:generate` for a new one.
+`migrations/0000_init.sql`, `0002_operational_events_related_delivery_idx.sql` and `0003_*.sql` (the two `instagram_accounts` token-refresh columns) are generated. `0001_seed_app_settings.sql` is a `drizzle-kit generate --custom` file holding the single `app_settings` row. Never edit a generated migration; change `schema.ts` and run `pnpm db:generate` for a new one.
 
 ## Delivery state machine
 

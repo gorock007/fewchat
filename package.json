@@ -16,6 +16,7 @@
     "test": "vitest run --project unit --project worker",
     "test:e2e": "playwright test",
     "db:generate": "drizzle-kit generate",
+    "seed": "node scripts/run-seed.mjs",
     "db:migrate:local": "wrangler d1 migrations apply fewchat-db --local",
     "cf:types": "wrangler types --include-runtime=false",
     "format": "prettier --write .",

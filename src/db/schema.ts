@@ -128,6 +128,11 @@ export const instagramAccounts = sqliteTable(
     // Ciphertext only; the plaintext token is never stored.
     encryptedAccessToken: text("encrypted_access_token"),
     tokenExpiresAt: epochMs("token_expires_at"),
+    // Daily refresh (src/worker/refresh.ts). `token_refreshed_at` is when the
+    // stored token was issued or last refreshed; the attempted column paces
+    // retries after a failed refresh.
+    tokenRefreshedAt: epochMs("token_refreshed_at"),
+    tokenRefreshAttemptedAt: epochMs("token_refresh_attempted_at"),
     connectionStatus: text("connection_status", { enum: CONNECTION_STATUSES })
       .notNull()
       .default("connected"),

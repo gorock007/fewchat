@@ -15,7 +15,6 @@ Usage band: amber (5h 1% used, 09:16)
 - 2026-11-16 · d1-schema · Q1 once-per-user: if a commenter's first DM ends PERMANENT_FAILED or EXPIRED, should their next comment on that automation get a DM (release the slot) or stay skipped? Needed before 2b
 
 ## Running workers
-- 2026-11-16 09:27 · claude/claude-opus-5-5 high · term 7be43a5a-07e0-4460-9190-401216c8c740 · handoffs/briefs/2026-11-16-0925-d1-schema.md
 <!-- `jarvis spawn` adds: - <date HH:MM> · claude/claude-opus-5-5 high · term <id> · handoffs/briefs/<file>.md -->
 <!-- `jarvis merge` removes the line -->
 

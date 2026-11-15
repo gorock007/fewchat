@@ -1,0 +1,1 @@
+CREATE INDEX `operational_events_related_delivery_idx` ON `operational_events` (`related_delivery_id`);

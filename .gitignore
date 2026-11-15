@@ -9,3 +9,15 @@ handoffs/.jev/
 handoffs/.jarvis/
 handoffs/jarvis.local.conf
 .claude/settings.local.json
+.env*.local
+/out/
+/build/
+/blob-report/
+/playwright/.cache/
+.vercel
+.DS_Store
+*.pem
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+.pnpm-debug.log*

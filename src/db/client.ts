@@ -11,6 +11,9 @@ function createDb() {
 }
 
 export type Db = ReturnType<typeof createDb>;
+export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+/** Anything that can run a query: the database or an open transaction. */
+export type DbOrTx = Db | Tx;
 
 let db: Db | undefined;
 

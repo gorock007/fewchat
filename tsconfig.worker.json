@@ -23,6 +23,7 @@
     "src/db/**/*.ts",
     "src/config/**/*.ts",
     "src/domain/**/*.ts",
-    "src/meta/**/*.ts"
+    "src/meta/**/*.ts",
+    "src/ingest/**/*.ts"
   ]
 }

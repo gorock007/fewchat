@@ -22,6 +22,7 @@
     "src/worker/**/*.ts",
     "src/db/**/*.ts",
     "src/config/**/*.ts",
-    "src/domain/**/*.ts"
+    "src/domain/**/*.ts",
+    "src/meta/**/*.ts"
   ]
 }

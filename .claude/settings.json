@@ -1,0 +1,108 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(handoffs/bin/jarvis start)",
+      "Bash(./handoffs/bin/jarvis start)",
+      "Bash(handoffs/bin/jarvis status)",
+      "Bash(./handoffs/bin/jarvis status)",
+      "Bash(handoffs/bin/jarvis band)",
+      "Bash(./handoffs/bin/jarvis band)",
+      "Bash(handoffs/bin/jarvis sessions)",
+      "Bash(./handoffs/bin/jarvis sessions)",
+      "Bash(handoffs/bin/jarvis resources)",
+      "Bash(./handoffs/bin/jarvis resources)",
+      "Bash(handoffs/bin/jarvis doctor)",
+      "Bash(./handoffs/bin/jarvis doctor)",
+      "Bash(handoffs/bin/jarvis read *)",
+      "Bash(./handoffs/bin/jarvis read *)",
+      "Bash(handoffs/bin/jarvis log *)",
+      "Bash(./handoffs/bin/jarvis log *)",
+      "Bash(handoffs/bin/jarvis lessons status)",
+      "Bash(./handoffs/bin/jarvis lessons status)",
+      "Bash(handoffs/bin/jarvis lessons show)",
+      "Bash(./handoffs/bin/jarvis lessons show)",
+      "Bash(handoffs/bin/jarvis lessons show *)",
+      "Bash(./handoffs/bin/jarvis lessons show *)",
+      "Bash(handoffs/bin/jarvis usage)",
+      "Bash(./handoffs/bin/jarvis usage)"
+    ]
+  },
+  "env": {
+    "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet",
+    "ENABLE_STOP_REVIEW": "0",
+    "SECURITY_REVIEW_MODEL": "claude-sonnet-5",
+    "SG_AGENTIC_MODEL": "claude-sonnet-5"
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/handoffs/bin/jarvis hook prompt",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/handoffs/bin/jarvis hook event working",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent|Task|Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/handoffs/bin/jarvis hook pretool",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/handoffs/bin/jarvis hook event stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/handoffs/bin/jarvis hook event notification",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/handoffs/bin/jarvis hook event ended",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "\"${CLAUDE_PROJECT_DIR:-.}\"/handoffs/bin/jarvis statusline"
+  },
+  "availableModels": [
+    "opus",
+    "sonnet",
+    "haiku"
+  ]
+}

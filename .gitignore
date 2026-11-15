@@ -1,0 +1,11 @@
+node_modules/
+.next/
+.env
+.env.local
+coverage/
+playwright-report/
+test-results/
+handoffs/.jev/
+handoffs/.jarvis/
+handoffs/jarvis.local.conf
+.claude/settings.local.json

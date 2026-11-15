@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+# jarvis — the routine steps of the Jarvis workflow, one command each, so the
+# coordinator spends its turns on judgement instead of bookkeeping.
+#
+#   jarvis start                       claim this terminal as Jarvis in OPEN.md, then status
+#   jarvis status                      band, workers, new handoffs, git — one short screen
+#   jarvis spawn <brief.md> [--after <partial-handoff>] [--attach <file>]... [--force]
+#                                      lint, enforce the band and the Claude caps (machine-wide,
+#                                      this checkout, Opus; --force passes them, never Fable),
+#                                      a respawn gate (a brief that blew its budget or used its
+#                                      attempts needs --after its handoff), the scope check (a
+#                                      running worker whose May-touch scope meets this one's:
+#                                      JARVIS_OVERLAP=warn | refuse), spawn, record
+#   jarvis sessions                    the Claude sessions counting toward the caps, machine-wide,
+#                                      and the ones idle for hours you may want to close
+#   jarvis log "<text>"                append a dated line to handoffs/log/YYYY-MM.md (finished
+#                                      notes; nothing reads it at session start); merge commits it.
+#                                      With JARVIS_OWNER set: handoffs/log/YYYY-MM.<owner>.md
+#   jarvis lessons status|propose|show|apply|reject|retire|select
+#                                      reviewed lessons from merged handoffs (jarvis-lessons.py,
+#                                      handoffs/LESSONS.md); propose makes one Sonnet call
+#   jarvis read <terminal> [<lines>]   the bottom of a worker's screen
+#   jarvis send <terminal> <text>      type into a worker's terminal and press Enter
+#   jarvis send <terminal> --keys <k,k> press keys: enter, esc, tab, shift+tab, up, 1, y, ctrl+c…
+#   jarvis close <terminal>            close a worker's terminal and drop it from OPEN.md
+#   jarvis budget <terminal> [min=N] [usd=N] [ctx=N[k]] [tests=N]
+#                                      a worker's budget use; with values, set that run's limits
+#                                      and re-arm its ask and pause (logged)
+#   jarvis merge <handoff.md> --check  file list vs git status, diff stat; changes nothing
+#   jarvis merge <handoff.md> --check --verify [--reuse]
+#                                      also run the brief's ```bash verify``` Checks blocks on
+#                                      HEAD plus only the listed changes, in a throwaway worktree
+#                                      (jarvis-verify.py); commits nothing. --reuse: report a
+#                                      recent pass of exactly this candidate instead of re-running
+#   jarvis merge <handoff.md> [-m <msg>] [--outcome <o> [--reason <r>]] [--no-push] [--keep-open] [--force]
+#                                      commit exactly the listed files + the handoff move,
+#                                      push, close the worker, update OPEN.md, stop what the
+#                                      worker left running; --outcome clean|corrected|escalated|
+#                                      respawned goes on the run record (corrected needs --reason
+#                                      checks|scope|logic|other)
+#   jarvis leftovers [<brief.md>] [--stop [--force]]
+#                                      processes workers started that outlived them (their
+#                                      scratch folder on the command line); --stop ends them
+#   jarvis leftovers --mine [--stop]   (a worker) what this session started that's still running
+#   jarvis watch [--once | --start]   run in its own terminal (no model): wakes Jarvis when a
+#                                      handoff lands or a worker is limited, waiting at a prompt
+#                                      or frozen; asks a worker past its budget for a partial
+#                                      handoff, then presses Escape if it keeps going; /clears
+#                                      Jarvis first after a long idle. --start opens that
+#                                      terminal, unless a watcher is already running
+#   jarvis band                        the usage band from the machine-wide statusline reading
+#                                      and its burn rate; no reading or a stale one is amber
+#   jarvis usage [--days N | --since DATE] [--all-projects]
+#                                      coordinating vs building, from local transcripts
+#   jarvis hook prompt                 UserPromptSubmit guard (from .claude/settings.json)
+#   jarvis hook pretool                PreToolUse guard: no Fable subagent, no Fable in a settings allowlist
+#   jarvis fable allow <brief.md>      (the user, in their own terminal) let that brief's next spawn run on Fable
+#   jarvis fable list | revoke <brief.md>
+#                                      authorizations pending, used and expired, and the log tail
+#   jarvis fable backstop [--apply]    whether the user-level availableModels keeps Fable out; --apply writes it
+#   jarvis statusline                 statusline tap: saves the 5-hour reading machine-wide (and
+#                                      its history), then runs yours
+#   jarvis lock <class> [--wait <sec>] [--reuse] -- <command…>
+#                                      run a heavy command only while holding its class's lease,
+#                                      machine-wide or per checkout; waiters queue in order
+#   jarvis resources [--json]          who holds each lease, who's queued, stored passes
+#   jarvis doctor [--apply | --quiet]  which agent processes, terminals and runs of this checkout
+#                                      are alive and why; --apply ends only the finished and lost
+#                                      ones Jarvis owns and orphaned verification worktrees, each
+#                                      audited; --quiet: one line or nothing
+#
+# Workers run on a host: Superset, Ultron, tmux, or one added in handoffs/bin/hosts/ (see
+# lib/hosts.sh). The agent in each terminal is any CLI: claude, codex, opencode, or one
+# added as JARVIS_AGENT_<name> in jarvis.conf.
+# Settings live in handoffs/jarvis.conf. Works on the stock macOS bash (3.2).
+# jq is needed for spawn, the hooks and the band. Without it spawn refuses and the band
+# reads amber (the Fable checks fail closed too); only the hooks and the guard let things through.
+set -u
+JARVIS_LIB=${BASH_SOURCE[0]}   # lib/ is beside this script: found through any symlink to it, before the cd below
+while [ -L "$JARVIS_LIB" ]; do JARVIS_LINK=$(readlink "$JARVIS_LIB"); case "$JARVIS_LINK" in /*) JARVIS_LIB=$JARVIS_LINK ;; *) JARVIS_LIB=$(dirname "$JARVIS_LIB")/$JARVIS_LINK ;; esac; done
+case "$JARVIS_LIB" in */*) JARVIS_LIB=${JARVIS_LIB%/*}/lib ;; *) JARVIS_LIB=lib ;; esac
+case "$JARVIS_LIB" in /*) ;; *) JARVIS_LIB=$PWD/$JARVIS_LIB ;; esac
+
+# PreToolUse runs this on every Agent, Task, Edit and Write call: leave before anything
+# else runs unless the input names fable or a settings*.json file. A settings file goes
+# on to be rebuilt and parsed every time, since its JSON can spell fable in \u escapes
+# or across several edits.
+if [ "${1:-} ${2:-}" = "hook pretool" ]; then
+  JARVIS_HOOK_IN=$(cat)
+  case "$JARVIS_HOOK_IN" in
+    *[Ff][Aa][Bb][Ll][Ee]*|*[Ss][Ee][Tt][Tt][Ii][Nn][Gg][Ss]*.[Jj][Ss][Oo][Nn]*) ;;
+    *) exit 0 ;;
+  esac
+fi
+
+# the turn hooks of Claude Code, Codex and OpenCode workers: lib/event-hook.sh, before config and host; silent, exit 0
+# shellcheck disable=SC1091
+[ "${1:-} ${2:-}" = "hook event" ] && { [ -r "$JARVIS_LIB/event-hook.sh" ] && . "$JARVIS_LIB/event-hook.sh"; exit 0; }
+
+# spawn's leased part says it started, first thing, so spawn_leased tells its exit (its
+# own message already printed) from a lease that was never taken
+if [ "${1:-}" = _spawn ] && [ -n "${JARVIS_SPAWN_RAN:-}" ]; then
+  echo ran > "$JARVIS_SPAWN_RAN" 2>/dev/null
+  unset JARVIS_SPAWN_RAN
+fi
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
+# shellcheck disable=SC2034 # read only by lib/*.sh
+JARVIS_CALLER_PWD=$PWD   # `lock` runs its command where it was called from
+# In `merge --verify`'s worktree a lock is the original checkout's lease, not the
+# worktree's: the verifier's ownership manifest ($JARVIS_VERIFY_CONTEXT) names that
+# checkout, honoured only while the verifier that wrote it is alive.
+verify_ctx() { # prints the original checkout; 3 = called from outside the worktree, 1 = no live context
+  local c=${JARVIS_VERIFY_CONTEXT:-} root tree pid start d
+  [ -n "$c" ] && [ -f "$c" ] || return 1
+  root=$(sed -n 's/^root: //p' "$c" | head -n 1); tree=$(sed -n 's/^tree: //p' "$c" | head -n 1)
+  pid=$(sed -n 's/^owner: //p' "$c" | head -n 1); start=$(sed -n 's/^owner_start: //p' "$c" | head -n 1)
+  case "$(pwd -P)/" in "$tree/"*) ;; *) [ "${1:-}" = lock ] && return 3 ;; esac
+  d=$(cd "$(dirname "$c")" 2>/dev/null && pwd -P) || return 1
+  case "$d/" in "$root/handoffs/.jarvis/verify/"*) ;; *) return 1 ;; esac
+  case "$pid" in ""|*[!0-9]*) return 1 ;; esac
+  [ -n "$start" ] && [ "$(TZ=UTC LC_ALL=C ps -o stat=,lstart= -p "$pid" 2>/dev/null \
+    | awk '$1 !~ /^Z/ && NF >= 6 {print $2 "_" $3 "_" $4 "_" $5 "_" $6}')" = "$start" ] || return 1
+  printf '%s' "$root"
+}
+case "${1:-}" in lock|_verify-lock)
+  if [ -n "${JARVIS_VERIFY_CONTEXT:-}" ]; then
+    JARVIS_VERIFY_ROOT=$(verify_ctx "$1")
+    case $? in
+      0) ROOT=$JARVIS_VERIFY_ROOT ;;
+      3) ;; # a lock in some other checkout a check made: an ordinary lock there
+      *) echo "jarvis lock: JARVIS_VERIFY_CONTEXT=$JARVIS_VERIFY_CONTEXT is no live verification's; unset it (the command was not run)" >&2; exit 2 ;;
+    esac
+  elif [ "$1" = _verify-lock ]; then
+    echo "jarvis: _verify-lock is merge --verify's own; use jarvis lock" >&2; exit 2
+  fi ;;
+esac
+cd "$ROOT" || exit 0
+H=handoffs
+# shellcheck disable=SC2034 # read only by lib/*.sh
+OPEN="$H/OPEN.md"
+# shellcheck disable=SC2034 # read only by lib/*.sh
+STATE="$H/.jarvis"
+BIN="$H/bin"
+
+[ -f "$JARVIS_LIB/defaults.sh" ] || { echo "jarvis: no $JARVIS_LIB/ beside bin/jarvis — re-run jarvis:setup" >&2; exit 1; }
+# shellcheck disable=SC1091
+. "$JARVIS_LIB/defaults.sh" || exit 1
+# shellcheck disable=SC1090
+[ -f "$H/jarvis.conf" ] && . "$H/jarvis.conf"
+# Team mode: one person's own settings, untracked (docs/teams.md); $STATE/local.conf is
+# where an early hand patch kept them. Their JARVIS_ROLE is the team role, lead or
+# contributor: it goes to TEAM_ROLE, and a worker's JARVIS_ROLE=worker from spawn stays.
+# shellcheck disable=SC2034 # read only by lib/*.sh
+TEAM_CONF=""; TEAM_ROLE=lead
+# shellcheck disable=SC2034
+if [ -f "$H/jarvis.local.conf" ] || [ -f "$STATE/local.conf" ]; then
+  JARVIS_M=${JARVIS_ROLE+set}; JARVIS_ENV_ROLE=${JARVIS_ROLE:-}; unset JARVIS_ROLE
+  for JARVIS_M_F in "$H/jarvis.local.conf" "$STATE/local.conf"; do
+    # shellcheck disable=SC1090
+    [ -f "$JARVIS_M_F" ] && . "$JARVIS_M_F" && TEAM_CONF="$TEAM_CONF${TEAM_CONF:+ }$JARVIS_M_F"
+  done
+  TEAM_ROLE=${JARVIS_ROLE:-lead}; unset JARVIS_ROLE
+  [ -n "$JARVIS_M" ] && export JARVIS_ROLE="$JARVIS_ENV_ROLE"
+fi
+# shellcheck disable=SC2034
+if [ -n "${JARVIS_OPEN:-}" ]; then OPEN=$JARVIS_OPEN
+elif [ -n "${JARVIS_OWNER:-}" ]; then
+  case "$JARVIS_OWNER" in *[!A-Za-z0-9._-]*|.*) echo "jarvis: JARVIS_OWNER=$JARVIS_OWNER: use letters, digits, . _ or - (it names handoffs/OPEN.<owner>.md)" >&2; exit 1 ;; esac
+  OPEN="$H/OPEN.$JARVIS_OWNER.md"
+fi
+# shellcheck disable=SC2034 # WS, PROJ, CLAUDE_DIR, JHOME: read only by lib/*.sh
+{
+WS="${SUPERSET_WORKSPACE_ID:-}"
+PROJ=$(printf '%s' "$ROOT" | sed 's#[^A-Za-z0-9]#-#g')   # Claude Code's name for this checkout
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+JHOME="${JARVIS_HOME:-$HOME/.jarvis}"   # machine-wide: the usage reading and its history, the spawn lease, pending spawns
+}
+ROOTP=$(pwd -P)                         # this checkout as session records name it
+# shellcheck disable=SC2034 # read only by lib/*.sh
+TAB=$(printf '\t')
+
+# the functions, from lib/: the host ones before a host of handoffs/bin/hosts/, the rest after it
+# shellcheck disable=SC1090
+for JARVIS_M in core hosts host-superset host-ultron host-tmux; do . "$JARVIS_LIB/$JARVIS_M.sh" || exit 1; done
+HOST=$(host_pick)
+# shellcheck disable=SC1090
+[ -n "$HOST" ] && [ -f "$BIN/hosts/$HOST.sh" ] && . "$BIN/hosts/$HOST.sh"
+# shellcheck disable=SC1090
+for JARVIS_M in band caps status spawn leftovers runs merge doctor budget watch fable hooks usage lock; do . "$JARVIS_LIB/$JARVIS_M.sh" || exit 1; done
+
+# ---------------------------------------------------------------- main
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+# shellcheck disable=SC2154 # scope, cap: set by lock_class in lib/lock.sh
+case "$cmd" in
+  start) cmd_start "$@" ;;
+  status) cmd_status ;;
+  log) cmd_log "$@" ;;
+  lessons) exec python3 -I "$BIN/jarvis-lessons.py" "$@" ;;
+  sessions) cmd_sessions ;;
+  _claim) cap_claim "$@" ;; # spawn's cap check, run by jarvis-lock.pl under the spawn lease
+  band) cmd_band ;;
+  spawn) cmd_spawn "$@" ;;
+  _spawn) # spawn's leased part, run by jarvis-lock.pl under this checkout's spawn lease
+    [ "${JARVIS_SPAWN_LEASE:-}" = "$ROOTP" ] || die "_spawn is jarvis spawn's own; use jarvis spawn"
+    unset JARVIS_SPAWN_LEASE
+    spawn_go "$@" ;;
+  read) cmd_read "$@" ;;
+  send) cmd_send "$@" ;;
+  close) cmd_close "$@" ;;
+  budget) cmd_budget "$@" ;;
+  merge) cmd_merge "$@" ;;
+  leftovers) cmd_leftovers "$@" ;;
+  lock) cmd_lock "$@" ;;
+  _verify-lock) cmd_lock "$@" ;; # merge --verify's lock: the original checkout's lease (verify_ctx set ROOT)
+  _verify-class) lock_class "${1:-}" && echo "$scope $cap" ;; # merge --verify's preflight: the lock class resolved
+  _run-set) cmd_run_set "$@" ;; # merge --verify's run-record writes, under the record's lock
+  resources) cmd_resources "$@" ;;
+  doctor) cmd_doctor "$@" ;;
+  watch) cmd_watch "$@" ;;
+  usage) cmd_usage "$@" ;;
+  statusline) cmd_statusline ;;
+  fable) cmd_fable "$@" ;;
+  hook)
+    case "${1:-}" in
+      prompt) hook_prompt ;;
+      pretool) hook_pretool ;;
+      *) exit 0 ;;
+    esac ;;
+  *) awk 'NR > 1 && !/^#/ {exit} NR > 1 {sub(/^# ?/, ""); print}' "$0"; exit 2 ;;
+esac
